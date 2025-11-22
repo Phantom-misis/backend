@@ -7,7 +7,7 @@ ENV GOEXPERIMENT=greenteagc
 
 RUN go mod init backend && go mod tidy && go build
 
-FROM alpine:3.22.2
+FROM debian:trixie-slim
 
 WORKDIR /backend
 COPY --from=builder_backend /backend .
