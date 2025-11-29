@@ -16,7 +16,16 @@ var redisPool *redigo.Pool
 func Start() {
 	initCelery()
 	r := gin.Default()
-	r.Use(cors.Default())
+
+	r.Use(cors.New(cors.Config{
+		AllowAllOrigins:  true,
+		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: false,
+		MaxAge:           12 * time.Hour,
+	}))
+
 	// Analyses
 	r.POST("/analyses", createAnalysis)
 	r.GET("/analyses", listAnalyses)
