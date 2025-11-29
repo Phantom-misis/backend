@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
@@ -14,7 +15,7 @@ var nextClusterID = 1
 
 func main() {
 	r := gin.Default()
-
+	r.Use(cors.Default())
 	// Analyses
 	r.POST("/analyses", createAnalysis)
 	r.GET("/analyses", listAnalyses)
