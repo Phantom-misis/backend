@@ -2,6 +2,7 @@ package server
 
 import (
 	"log"
+	"os"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -45,12 +46,50 @@ func Start() {
 }
 
 func initCelery() {
+	redisHost := os.Getenv("REDIS_HOST")
+	if redisHost == "" {
+		redisHost = "redis"
+	}
+
+	redisPort := os.Getenv("REDIS_PORT")
+	if redisPort == "" {
+		redisPort = "6379"
+	}
+
+	redisPassword := os.Getenv("REDIS_PASSWORD")
+	redisAddr := redisHost + ":" + redisPort
+
+	if redisPassword != "" {
+		log.Printf("Connecting to Redis at %s (with password)", redisAddr)
+	} else {
+		log.Printf("Connecting to Redis at %s (no password)", redisAddr)
+	}
+
 	redisPool = &redigo.Pool{
 		MaxIdle:     3,
 		IdleTimeout: 240 * time.Second,
 		Dial: func() (redigo.Conn, error) {
+			conn, err := redigo.Dial("tcp", redisAddr)
+			if err != nil {
+				return nil, err
+			}
 
-			return redigo.Dial("tcp", "localhost:13394")
+			if redisPassword != "" {
+				_, err = conn.Do("AUTH", redisPassword)
+				if err != nil {
+					conn.Close()
+					return nil, err
+				}
+			}
+
+			return conn, nil
+		},
+		TestOnBorrow: func(c redigo.Conn, t time.Time) error {
+			if time.Since(t) < time.Minute {
+				return nil
+			}
+			_, err := c.Do("PING")
+			return err
 		},
 	}
 
@@ -63,4 +102,5 @@ func initCelery() {
 	if err != nil {
 		log.Fatalf("failed to init celery client: %v", err)
 	}
+	log.Printf("Celery client initialized successfully")
 }
