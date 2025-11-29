@@ -1,7 +1,10 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -33,19 +36,65 @@ func login(c *gin.Context) {
 }
 
 func createAnalysis(c *gin.Context) {
-	file, _ := c.FormFile("file")
-	id := nextAnalysisID
-	nextAnalysisID++
+	fileHeader, err := c.FormFile("file")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file is required"})
+		return
+	}
+
+	f, err := fileHeader.Open()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot open file"})
+		return
+	}
+	defer f.Close()
+
+	csvData, err := io.ReadAll(f)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot read file"})
+		return
+	}
+
+	taskID := fmt.Sprintf("analysis-%d", nextAnalysisID)
+
+	asyncResult, err := cli.Delay("worker.process_file", string(csvData), taskID)
+	if err != nil {
+		log.Printf("celery delay error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send task"})
+		return
+	}
+
+	result, err := asyncResult.Get(30 * time.Second)
+	if err != nil {
+		log.Printf("celery get error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "task failed or timed out"})
+		return
+	}
+	var stats types.Stats
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("marshal worker result error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid worker result"})
+		return
+	}
+
+	if err := json.Unmarshal(raw, &stats); err != nil {
+		log.Printf("unmarshal worker result error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid worker result"})
+		return
+	}
 
 	analysis := &types.Analysis{
-		ID:        id,
-		Status:    "pending",
-		Filename:  file.Filename,
+		ID:        nextAnalysisID,
+		Status:    "done",
+		Filename:  fileHeader.Filename,
 		CreatedAt: time.Now(),
 		Error:     nil,
-		Stats:     nil,
+		Stats:     &stats,
 	}
-	analyses[id] = analysis
+	analyses[nextAnalysisID] = analysis
+	nextAnalysisID++
 
 	c.JSON(http.StatusOK, analysis)
 }
@@ -68,11 +117,13 @@ func getAnalysis(c *gin.Context) {
 }
 
 func deleteAnalysis(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
+	strid := c.Param("id")
+	id, _ := strconv.Atoi(strid)
+
 	delete(analyses, id)
 
 	for k, v := range reviews {
-		if v.AnalysisID == id {
+		if v.AnalysisID == strid {
 			delete(reviews, k)
 		}
 	}
@@ -87,7 +138,7 @@ func deleteAnalysis(c *gin.Context) {
 }
 
 func listReviews(c *gin.Context) {
-	analysisID, _ := strconv.Atoi(c.Param("id"))
+	analysisID := c.Param("id")
 	var data []*types.Review
 	for _, r := range reviews {
 		if r.AnalysisID == analysisID {

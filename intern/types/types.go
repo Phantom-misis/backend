@@ -25,7 +25,7 @@ type Stats struct {
 
 type Review struct {
 	ID         int     `json:"id"`
-	AnalysisID int     `json:"analysis_id"`
+	AnalysisID string  `json:"analysis_id"`
 	Text       string  `json:"text"`
 	Sentiment  string  `json:"sentiment"`
 	Confidence float64 `json:"confidence"`
