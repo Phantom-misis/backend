@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"fmt"
@@ -6,8 +6,18 @@ import (
 	"strconv"
 	"time"
 
+	"backend/intern/types"
+
 	"github.com/gin-gonic/gin"
 )
+
+var analyses = map[int]*types.Analysis{}
+var reviews = map[int]*types.Review{}
+var clusters = map[int]*types.Cluster{}
+
+var nextAnalysisID = 1
+var nextReviewID = 1
+var nextClusterID = 1
 
 func ping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -16,7 +26,7 @@ func ping(c *gin.Context) {
 }
 
 func login(c *gin.Context) {
-	var form LoginForm
+	var form types.LoginForm
 	if c.ShouldBind(&form) == nil {
 		c.JSON(200, gin.H{"message": fmt.Sprintf("Hello %s", form.User)})
 	}
@@ -27,7 +37,7 @@ func createAnalysis(c *gin.Context) {
 	id := nextAnalysisID
 	nextAnalysisID++
 
-	analysis := &Analysis{
+	analysis := &types.Analysis{
 		ID:        id,
 		Status:    "pending",
 		Filename:  file.Filename,
@@ -41,7 +51,7 @@ func createAnalysis(c *gin.Context) {
 }
 
 func listAnalyses(c *gin.Context) {
-	var data []*Analysis
+	var data []*types.Analysis
 	for _, a := range analyses {
 		data = append(data, a)
 	}
@@ -78,7 +88,7 @@ func deleteAnalysis(c *gin.Context) {
 
 func listReviews(c *gin.Context) {
 	analysisID, _ := strconv.Atoi(c.Param("id"))
-	var data []*Review
+	var data []*types.Review
 	for _, r := range reviews {
 		if r.AnalysisID == analysisID {
 			data = append(data, r)
@@ -117,7 +127,7 @@ func updateReview(c *gin.Context) {
 
 func listClusters(c *gin.Context) {
 	analysisID, _ := strconv.Atoi(c.Param("id"))
-	var data []*Cluster
+	var data []*types.Cluster
 	for _, cl := range clusters {
 		if cl.AnalysisID == analysisID {
 			data = append(data, cl)
