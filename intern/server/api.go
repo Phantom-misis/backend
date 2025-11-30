@@ -149,7 +149,7 @@ func checkAnalysisResult(id int, a *types.Analysis) {
 	if err != nil {
 		log.Printf("error getting async result: %v", err)
 		errMsg := fmt.Sprintf("failed to get result: %v", err)
-		a.Status = "error"
+		a.Status = "failed"
 		a.Error = &errMsg
 		delete(asyncResults, id)
 		return
@@ -159,7 +159,7 @@ func checkAnalysisResult(id int, a *types.Analysis) {
 	if err != nil {
 		log.Printf("marshal worker result error: %v", err)
 		errMsg := "invalid worker result format"
-		a.Status = "error"
+		a.Status = "failed"
 		a.Error = &errMsg
 		delete(asyncResults, id)
 		return
@@ -168,7 +168,7 @@ func checkAnalysisResult(id int, a *types.Analysis) {
 	var workerError WorkerError
 	if err := json.Unmarshal(raw, &workerError); err == nil && workerError.Status == "error" {
 		log.Printf("worker returned error: %s", workerError.Message)
-		a.Status = "error"
+		a.Status = "failed"
 		a.Error = &workerError.Message
 		delete(asyncResults, id)
 		return
@@ -178,7 +178,7 @@ func checkAnalysisResult(id int, a *types.Analysis) {
 	if err := json.Unmarshal(raw, &workerResult); err != nil {
 		log.Printf("unmarshal worker result error: %v", err)
 		errMsg := "invalid worker result structure"
-		a.Status = "error"
+		a.Status = "failed"
 		a.Error = &errMsg
 		delete(asyncResults, id)
 		return
@@ -187,7 +187,7 @@ func checkAnalysisResult(id int, a *types.Analysis) {
 	if workerResult.Status == "error" {
 		log.Printf("worker result status is error")
 		errMsg := "worker processing failed"
-		a.Status = "error"
+		a.Status = "failed"
 		a.Error = &errMsg
 		delete(asyncResults, id)
 		return
