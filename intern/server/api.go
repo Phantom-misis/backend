@@ -50,6 +50,11 @@ type WorkerCluster struct {
 	Summary string `json:"summary"`
 }
 
+type WorkerError struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 func ping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"message": "pong",
@@ -150,71 +155,95 @@ func checkAnalysisResult(id int, a *types.Analysis) {
 		return
 	}
 
-	var workerResult WorkerResult
 	raw, err := json.Marshal(result)
 	if err != nil {
 		log.Printf("marshal worker result error: %v", err)
 		errMsg := "invalid worker result format"
 		a.Status = "error"
 		a.Error = &errMsg
-	} else {
-		if err := json.Unmarshal(raw, &workerResult); err != nil {
-			log.Printf("unmarshal worker result error: %v", err)
-			errMsg := "invalid worker result structure"
-			a.Status = "error"
-			a.Error = &errMsg
-		} else {
-			stats := types.Stats{
-				Total:    len(workerResult.Reviews),
-				Positive: 0,
-				Negative: 0,
-				Neutral:  0,
-			}
+		delete(asyncResults, id)
+		return
+	}
 
-			analysisIDStr := strconv.Itoa(a.ID)
+	var workerError WorkerError
+	if err := json.Unmarshal(raw, &workerError); err == nil && workerError.Status == "error" {
+		log.Printf("worker returned error: %s", workerError.Message)
+		a.Status = "error"
+		a.Error = &workerError.Message
+		delete(asyncResults, id)
+		return
+	}
 
-			for _, wr := range workerResult.Reviews {
-				review := &types.Review{
-					ID:         nextReviewID,
-					SourceID:   wr.SourceID,
-					AnalysisID: analysisIDStr,
-					Text:       wr.Text,
-					Sentiment:  wr.Sentiment,
-					Confidence: wr.Confidence,
-					ClusterID:  wr.ClusterID,
-					Coords: types.Coord{
-						X: wr.Coords.X,
-						Y: wr.Coords.Y,
-					},
-				}
-				reviews[nextReviewID] = review
-				nextReviewID++
+	var workerResult WorkerResult
+	if err := json.Unmarshal(raw, &workerResult); err != nil {
+		log.Printf("unmarshal worker result error: %v", err)
+		errMsg := "invalid worker result structure"
+		a.Status = "error"
+		a.Error = &errMsg
+		delete(asyncResults, id)
+		return
+	}
 
-				switch wr.Sentiment {
-				case "positive":
-					stats.Positive++
-				case "negative":
-					stats.Negative++
-				case "neutral":
-					stats.Neutral++
-				}
-			}
+	if workerResult.Status == "error" {
+		log.Printf("worker result status is error")
+		errMsg := "worker processing failed"
+		a.Status = "error"
+		a.Error = &errMsg
+		delete(asyncResults, id)
+		return
+	}
 
-			for _, wc := range workerResult.Clusters {
-				cluster := &types.Cluster{
-					TrueID:     nextClusterID,
-					ID:         wc.ID,
-					AnalysisID: a.ID,
-					Title:      wc.Title,
-					Summary:    wc.Summary,
-				}
-				clusters[nextClusterID] = cluster
-				nextClusterID++
-			}
-
-			a.Status = "done"
-			a.Stats = &stats
+	{
+		stats := types.Stats{
+			Total:    len(workerResult.Reviews),
+			Positive: 0,
+			Negative: 0,
+			Neutral:  0,
 		}
+
+		analysisIDStr := strconv.Itoa(a.ID)
+
+		for _, wr := range workerResult.Reviews {
+			review := &types.Review{
+				ID:         nextReviewID,
+				SourceID:   wr.SourceID,
+				AnalysisID: analysisIDStr,
+				Text:       wr.Text,
+				Sentiment:  wr.Sentiment,
+				Confidence: wr.Confidence,
+				ClusterID:  wr.ClusterID,
+				Coords: types.Coord{
+					X: wr.Coords.X,
+					Y: wr.Coords.Y,
+				},
+			}
+			reviews[nextReviewID] = review
+			nextReviewID++
+
+			switch wr.Sentiment {
+			case "positive":
+				stats.Positive++
+			case "negative":
+				stats.Negative++
+			case "neutral":
+				stats.Neutral++
+			}
+		}
+
+		for _, wc := range workerResult.Clusters {
+			cluster := &types.Cluster{
+				TrueID:     nextClusterID,
+				ID:         wc.ID,
+				AnalysisID: a.ID,
+				Title:      wc.Title,
+				Summary:    wc.Summary,
+			}
+			clusters[nextClusterID] = cluster
+			nextClusterID++
+		}
+
+		a.Status = "done"
+		a.Stats = &stats
 	}
 
 	delete(asyncResults, id)
