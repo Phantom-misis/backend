@@ -14,6 +14,7 @@ type Analysis struct {
 	CreatedAt time.Time `json:"created_at"`
 	Error     *string   `json:"error"`
 	Stats     *Stats    `json:"stats"`
+	TaskID    string    `json:"-"`
 }
 
 type Stats struct {
@@ -26,6 +27,7 @@ type Stats struct {
 type Review struct {
 	ID         int     `json:"id"`
 	AnalysisID string  `json:"analysis_id"`
+	SourceID   string  `json:"source_id"`
 	Text       string  `json:"text"`
 	Sentiment  string  `json:"sentiment"`
 	Confidence float64 `json:"confidence"`
@@ -39,6 +41,7 @@ type Coord struct {
 }
 
 type Cluster struct {
+	TrueID     int    `json:"-"`
 	ID         int    `json:"id"`
 	AnalysisID int    `json:"analysis_id"`
 	Title      string `json:"title"`

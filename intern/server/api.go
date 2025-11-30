@@ -12,15 +12,43 @@ import (
 	"backend/intern/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gocelery/gocelery"
 )
 
 var analyses = map[int]*types.Analysis{}
 var reviews = map[int]*types.Review{}
 var clusters = map[int]*types.Cluster{}
+var asyncResults = map[int]*gocelery.AsyncResult{}
 
 var nextAnalysisID = 1
 var nextReviewID = 1
 var nextClusterID = 1
+
+type WorkerResult struct {
+	Status   string          `json:"status"`
+	Reviews  []WorkerReview  `json:"reviews"`
+	Clusters []WorkerCluster `json:"clusters"`
+}
+
+type WorkerReview struct {
+	SourceID   string       `json:"source_id"`
+	Text       string       `json:"text"`
+	Sentiment  string       `json:"sentiment"`
+	Confidence float64      `json:"confidence"`
+	ClusterID  int          `json:"cluster_id"`
+	Coords     WorkerCoords `json:"coords"`
+}
+
+type WorkerCoords struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type WorkerCluster struct {
+	ID      int    `json:"id"`
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
+}
 
 func ping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
@@ -55,51 +83,38 @@ func createAnalysis(c *gin.Context) {
 		return
 	}
 
-	taskID := fmt.Sprintf("analysis-%d", nextAnalysisID)
+	taskArgID := fmt.Sprintf("analysis-%d", nextAnalysisID)
 
-	asyncResult, err := cli.Delay("worker.process_file", string(csvData), taskID)
+	asyncResult, err := cli.Delay("worker.process_file", string(csvData), taskArgID)
 	if err != nil {
 		log.Printf("celery delay error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send task"})
 		return
 	}
 
-	result, err := asyncResult.Get(30 * time.Second)
-	if err != nil {
-		log.Printf("celery get error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "task failed or timed out"})
-		return
-	}
-	var stats types.Stats
-
-	raw, err := json.Marshal(result)
-	if err != nil {
-		log.Printf("marshal worker result error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid worker result"})
-		return
-	}
-
-	if err := json.Unmarshal(raw, &stats); err != nil {
-		log.Printf("unmarshal worker result error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "invalid worker result"})
-		return
-	}
-
 	analysis := &types.Analysis{
 		ID:        nextAnalysisID,
-		Status:    "done",
+		Status:    "pending",
 		Filename:  fileHeader.Filename,
 		CreatedAt: time.Now(),
 		Error:     nil,
-		Stats:     &stats,
+		Stats:     nil,
+		TaskID:    asyncResult.TaskID,
 	}
 	analyses[nextAnalysisID] = analysis
+	asyncResults[nextAnalysisID] = asyncResult
 	nextAnalysisID++
 
 	c.JSON(http.StatusOK, analysis)
 }
 
 func listAnalyses(c *gin.Context) {
+	for id, a := range analyses {
+		if a.Status == "pending" {
+			checkAnalysisResult(id, a)
+		}
+	}
+
 	var data []*types.Analysis
 	for _, a := range analyses {
 		data = append(data, a)
@@ -107,13 +122,118 @@ func listAnalyses(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": data})
 }
 
-func getAnalysis(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	if a, ok := analyses[id]; ok {
-		c.JSON(http.StatusOK, a)
+func checkAnalysisResult(id int, a *types.Analysis) {
+	asyncResult, ok := asyncResults[id]
+	if !ok {
 		return
 	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+
+	ready, err := asyncResult.Ready()
+	if err != nil {
+		log.Printf("error checking task ready status: %v", err)
+		return
+	}
+
+	log.Printf("async result ready: %v", ready)
+
+	if !ready {
+		return
+	}
+
+	result, err := asyncResult.AsyncGet()
+	if err != nil {
+		log.Printf("error getting async result: %v", err)
+		errMsg := fmt.Sprintf("failed to get result: %v", err)
+		a.Status = "error"
+		a.Error = &errMsg
+		delete(asyncResults, id)
+		return
+	}
+
+	var workerResult WorkerResult
+	raw, err := json.Marshal(result)
+	if err != nil {
+		log.Printf("marshal worker result error: %v", err)
+		errMsg := "invalid worker result format"
+		a.Status = "error"
+		a.Error = &errMsg
+	} else {
+		if err := json.Unmarshal(raw, &workerResult); err != nil {
+			log.Printf("unmarshal worker result error: %v", err)
+			errMsg := "invalid worker result structure"
+			a.Status = "error"
+			a.Error = &errMsg
+		} else {
+			stats := types.Stats{
+				Total:    len(workerResult.Reviews),
+				Positive: 0,
+				Negative: 0,
+				Neutral:  0,
+			}
+
+			analysisIDStr := strconv.Itoa(a.ID)
+
+			for _, wr := range workerResult.Reviews {
+				review := &types.Review{
+					ID:         nextReviewID,
+					SourceID:   wr.SourceID,
+					AnalysisID: analysisIDStr,
+					Text:       wr.Text,
+					Sentiment:  wr.Sentiment,
+					Confidence: wr.Confidence,
+					ClusterID:  wr.ClusterID,
+					Coords: types.Coord{
+						X: wr.Coords.X,
+						Y: wr.Coords.Y,
+					},
+				}
+				reviews[nextReviewID] = review
+				nextReviewID++
+
+				switch wr.Sentiment {
+				case "positive":
+					stats.Positive++
+				case "negative":
+					stats.Negative++
+				case "neutral":
+					stats.Neutral++
+				}
+			}
+
+			for _, wc := range workerResult.Clusters {
+				cluster := &types.Cluster{
+					TrueID:     nextClusterID,
+					ID:         wc.ID,
+					AnalysisID: a.ID,
+					Title:      wc.Title,
+					Summary:    wc.Summary,
+				}
+				clusters[nextClusterID] = cluster
+				nextClusterID++
+			}
+
+			a.Status = "done"
+			a.Stats = &stats
+		}
+	}
+
+	delete(asyncResults, id)
+}
+
+func getAnalysis(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+
+	a, ok := analyses[id]
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+
+	if a.Status == "pending" {
+		checkAnalysisResult(id, a)
+	}
+
+	c.JSON(http.StatusOK, a)
 }
 
 func deleteAnalysis(c *gin.Context) {
@@ -121,6 +241,7 @@ func deleteAnalysis(c *gin.Context) {
 	id, _ := strconv.Atoi(strid)
 
 	delete(analyses, id)
+	delete(asyncResults, id)
 
 	for k, v := range reviews {
 		if v.AnalysisID == strid {
@@ -178,7 +299,7 @@ func updateReview(c *gin.Context) {
 
 func listClusters(c *gin.Context) {
 	analysisID, _ := strconv.Atoi(c.Param("id"))
-	var data []*types.Cluster
+	data := []*types.Cluster{}
 	for _, cl := range clusters {
 		if cl.AnalysisID == analysisID {
 			data = append(data, cl)
